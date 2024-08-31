@@ -27,6 +27,13 @@ var (
 	BuildTime string
 )
 
+func init() {
+	if BuildTime == "" {
+		BuildTime = "not set"
+	}
+	fmt.Printf("Build Time: %s\n", BuildTime)
+}
+
 const (
 	badgerPath = "/tmp/badger"
 	crontab    = "59 23 * * *"
