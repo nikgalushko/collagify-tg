@@ -35,20 +35,23 @@ func init() {
 }
 
 const (
-	badgerPath = "/tmp/badger"
-	crontab    = "59 23 * * *"
+	badgerPath        = "/tmp/badger"
+	crontab           = "59 23 * * *"
+	apiTelegramServer = "https://api.telegram.org"
 )
 
 type App struct {
-	log *slog.Logger
-	crn *cron.Cron
-	bt  *bot.Bot
-	db  *badger.DB
+	log       *slog.Logger
+	crn       *cron.Cron
+	bt        *bot.Bot
+	db        *badger.DB
+	serverURL string
 }
 
 type AppArgs struct {
 	Token  string
 	DBPath string
+	Server string
 }
 
 func NewAppArgs() (AppArgs, error) {
@@ -61,11 +64,11 @@ func NewAppArgs() (AppArgs, error) {
 		dbPath = badgerPath
 	}
 
-	return AppArgs{Token: token, DBPath: dbPath}, nil
+	return AppArgs{Token: token, DBPath: dbPath, Server: apiTelegramServer}, nil
 }
 
-func New(args AppArgs) (*App, error) {
-	a := &App{}
+func New(log *slog.Logger, args AppArgs) (*App, error) {
+	a := &App{log: log, serverURL: args.Server}
 	a.initCron()
 	err := a.initBot(args.Token)
 	if err != nil {
@@ -98,6 +101,7 @@ func (a *App) initCron() {
 func (a *App) initBot(token string) error {
 	opts := []bot.Option{
 		bot.WithDefaultHandler(a.botHandler),
+		bot.WithServerURL(a.serverURL),
 	}
 
 	b, err := bot.New(token, opts...)
@@ -114,9 +118,12 @@ func (a *App) Start(ctx context.Context) {
 	a.bt.Start(ctx)
 }
 
-func (a *App) Close() error {
+func (a *App) Close() {
 	a.crn.Stop()
-	return a.db.Close()
+	err := a.db.Close()
+	if err != nil {
+		a.log.Error("on close", slogerr(err))
+	}
 }
 
 func (a *App) cronHandler() {
@@ -334,7 +341,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	a, err := New(appArgs)
+	a, err := New(log, appArgs)
 	if err != nil {
 		log.Error("init app", slogerr(err))
 		os.Exit(1)
