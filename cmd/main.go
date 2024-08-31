@@ -25,14 +25,8 @@ import (
 
 var (
 	BuildTime string
+	moscowLoc *time.Location
 )
-
-func init() {
-	if BuildTime == "" {
-		BuildTime = "not set"
-	}
-	fmt.Printf("Build Time: %s\n", BuildTime)
-}
 
 const (
 	badgerPath        = "/tmp/badger"
@@ -94,7 +88,12 @@ func (a *App) initDB(dbPath string) error {
 
 func (a *App) initCron() {
 	c := cron.New()
-	c.AddFunc(crontab, a.cronHandler)
+	c.AddFunc(crontab, func() {
+		err := a.cronHandler()
+		if err != nil {
+			a.log.Error("cron handler", slogerr(err))
+		}
+	})
 	a.crn = c
 }
 
@@ -126,7 +125,7 @@ func (a *App) Close() {
 	}
 }
 
-func (a *App) cronHandler() {
+func (a *App) cronHandler() error {
 	log := a.log.WithGroup("cron")
 	log.Info("cron task start")
 
@@ -154,13 +153,13 @@ func (a *App) cronHandler() {
 		return err
 	})
 	if err != nil {
-		log.Error("fetch registered chats", slogerr(err))
-		return
+		return fmt.Errorf("fetch registered chats: %w", err)
 	}
 
 	log.Debug("chats to range", slog.Any("chats", chats))
 
-	date := time.Now().Format(time.DateOnly)
+	date := time.Now().In(moscowLoc).Format(time.DateOnly)
+	var funcErr error
 	for _, chatID := range chats {
 		log := log.With(slog.Int64("chat_id", chatID))
 		var links []string
@@ -183,7 +182,7 @@ func (a *App) cronHandler() {
 			return nil
 		})
 		if err != nil {
-			log.Error("reading keys by prefix", slogerr(err))
+			funcErr = errors.Join(funcErr, fmt.Errorf("reading keys by prefix: %w", err))
 			continue
 		}
 
@@ -193,14 +192,14 @@ func (a *App) cronHandler() {
 		for _, link := range links {
 			resp, err := http.Get(link)
 			if err != nil {
-				log.Error("downloading link", slogerr(err), slog.String("link", link))
+				funcErr = errors.Join(funcErr, fmt.Errorf("download link %s: %w", link, err))
 				continue
 			}
 			defer resp.Body.Close()
 
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				log.Error("reading response body", slogerr(err), slog.String("link", link))
+				funcErr = errors.Join(funcErr, fmt.Errorf("reading response body: %w", err))
 				continue
 			}
 
@@ -215,7 +214,7 @@ func (a *App) cronHandler() {
 
 		collage, err := image.Concat(images, rows, cols)
 		if err != nil {
-			log.Error("make collage", slogerr(err))
+			funcErr = errors.Join(funcErr, fmt.Errorf("make collage: %w", err))
 			continue
 		}
 
@@ -224,9 +223,11 @@ func (a *App) cronHandler() {
 			Photo:  &models.InputFileUpload{Filename: fmt.Sprintf("collage_%s.jpg", date), Data: bytes.NewReader(collage)},
 		})
 		if err != nil {
-			slog.Error("send collage", slogerr(err))
+			funcErr = errors.Join(funcErr, fmt.Errorf("send collage: %w", err))
 		}
 	}
+
+	return funcErr
 }
 
 func (a *App) botHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -236,14 +237,14 @@ func (a *App) botHandler(ctx context.Context, b *bot.Bot, update *models.Update)
 	}
 
 	if update.ChannelPost != nil {
-		err := a.botHandleChannelPost(ctx, b, update.ChannelPost)
+		err := a.botHandleChannelPost(ctx, update.ChannelPost)
 		if err != nil {
 			a.log.Error("failed to handle new photo message", slogerr(err))
 		}
 	}
 
 	if update.MyChatMember != nil {
-		err := a.botHandleMyChatMember(ctx, b, update.MyChatMember)
+		err := a.botHandleMyChatMember(ctx, update.MyChatMember)
 		if err != nil {
 			a.log.Error("failed to handle new chat registration", slogerr(err))
 		}
@@ -255,7 +256,7 @@ func (a *App) botHandler(ctx context.Context, b *bot.Bot, update *models.Update)
 	})*/
 }
 
-func (a *App) botHandleMyChatMember(ctx context.Context, b *bot.Bot, r *models.ChatMemberUpdated) error {
+func (a *App) botHandleMyChatMember(ctx context.Context, r *models.ChatMemberUpdated) error {
 	err := a.db.Update(func(tx *badger.Txn) error {
 		k := []byte("chats")
 		chats, err := tx.Get(k)
@@ -293,7 +294,7 @@ func (a *App) botHandleMyChatMember(ctx context.Context, b *bot.Bot, r *models.C
 	return nil
 }
 
-func (a *App) botHandleChannelPost(ctx context.Context, b *bot.Bot, m *models.Message) error {
+func (a *App) botHandleChannelPost(ctx context.Context, m *models.Message) error {
 	if len(m.Photo) == 0 {
 		a.log.Warn("message without photo")
 		return nil
@@ -304,16 +305,16 @@ func (a *App) botHandleChannelPost(ctx context.Context, b *bot.Bot, m *models.Me
 	})
 
 	largestPhoto := m.Photo[len(m.Photo)-1]
-	f, err := b.GetFile(ctx, &bot.GetFileParams{FileID: largestPhoto.FileID})
+	f, err := a.bt.GetFile(ctx, &bot.GetFileParams{FileID: largestPhoto.FileID})
 	if err != nil {
 		return fmt.Errorf("get file info: %w", err)
 	}
 
-	link := b.FileDownloadLink(f)
+	link := a.bt.FileDownloadLink(f)
 	a.log.Info("download file link", slog.String("url", link))
 
 	err = a.db.Update(func(tx *badger.Txn) error {
-		now := time.Now()
+		now := time.Unix(int64(m.Date), 0).In(moscowLoc)
 		chatID := m.Chat.ID
 		day := now.Format(time.DateOnly)
 		clock := now.Format(time.TimeOnly)
@@ -335,9 +336,20 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
+	if BuildTime == "" {
+		BuildTime = "not set"
+	}
+	log.Info("start", slog.String("build-time", BuildTime))
+
 	appArgs, err := NewAppArgs()
 	if err != nil {
 		log.Error("init app arguments", slogerr(err))
+		os.Exit(1)
+	}
+
+	moscowLoc, err = loadLocation()
+	if err != nil {
+		log.Error("loading location 'Europe/Moscow'", slogerr(err))
 		os.Exit(1)
 	}
 
@@ -357,4 +369,8 @@ func slogerr(err error) slog.Attr {
 	}
 
 	return slog.String("err", err.Error())
+}
+
+func loadLocation() (*time.Location, error) {
+	return time.LoadLocation("Europe/Moscow")
 }
