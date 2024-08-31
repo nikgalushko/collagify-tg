@@ -21,3 +21,5 @@
 go.work
 
 .env
+cmd/testdata/.DS_Store
+cmd/.DS_Store
