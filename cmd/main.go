@@ -18,12 +18,19 @@ import (
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	"github.com/robfig/cron"
+	"github.com/robfig/cron/v3"
 
 	"github.com/nikgalushko/collagify-tg/pkg/image"
 )
 
-const badgerPath = "/tmp/badger"
+var (
+	BuildTime string
+)
+
+const (
+	badgerPath = "/tmp/badger"
+	crontab    = "59 23 * * *"
+)
 
 type App struct {
 	log *slog.Logger
@@ -77,7 +84,7 @@ func (a *App) initDB(dbPath string) error {
 
 func (a *App) initCron() {
 	c := cron.New()
-	c.AddFunc("27 17 * * *", a.cronHandler)
+	c.AddFunc(crontab, a.cronHandler)
 	a.crn = c
 }
 

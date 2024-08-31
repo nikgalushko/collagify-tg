@@ -3,13 +3,13 @@ module github.com/nikgalushko/collagify-tg
 go 1.23.0
 
 require (
+	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/go-telegram/bot v1.7.2
-	github.com/robfig/cron v1.2.0
+	github.com/robfig/cron/v3 v3.0.0
 )
 
 require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
-	github.com/dgraph-io/badger/v4 v4.2.0 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
