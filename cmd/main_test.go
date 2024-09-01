@@ -28,7 +28,7 @@ func TestApp(t *testing.T) {
 	is.NoErr(err)
 	moscowLoc = loc
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	server := StartServer(is)
 	t.Cleanup(server.close)
@@ -50,51 +50,25 @@ func TestApp(t *testing.T) {
 	})
 	is.NoErr(err)
 
-	server.expected("collage_2024-08-31.jpg")
+	err = app.botHandleChannelPost(context.TODO(), &models.Message{
+		Chat: models.Chat{ID: 1337},
+		Date: int(time.Date(2024, time.September, 1, 13, 11, 0, 0, loc).Unix()),
+		Photo: []models.PhotoSize{
+			{FileID: "green.jpeg", FileSize: 10},
+			{FileID: "fake.jpeg", FileSize: 2},
+		},
+	})
+	is.NoErr(err)
+
 	err = app.cronHandler()
 	is.NoErr(err)
-}
-
-func extractFileanme(r *http.Request) (string, error) {
-	contentType := r.Header.Get("Content-Type")
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return "", err
-	}
-
-	if !strings.HasPrefix(mediaType, "multipart/") {
-		return "", fmt.Errorf("invalid content type: %s", contentType)
-	}
-
-	boundary := params["boundary"]
-	if boundary == "" {
-		return "", fmt.Errorf("no boundary found in Content-Type")
-	}
-
-	mr := multipart.NewReader(r.Body, boundary)
-
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-
-		filename := part.FileName()
-		if filename != "" {
-			return filename, nil
-		}
-	}
-
-	return "", errors.New("no filename")
+	is.Equal([]string{"collage_2024-08-31.jpg", "collage_2024-09-01.jpg"}, server.sentPhotos)
 }
 
 type server struct {
-	expectedFilename string
-	is               *is.I
-	http             *httptest.Server
+	is         *is.I
+	http       *httptest.Server
+	sentPhotos []string
 }
 
 func StartServer(is *is.I) *server {
@@ -109,10 +83,6 @@ func (s *server) close() {
 
 func (s *server) Addr() string {
 	return s.http.URL
-}
-
-func (s *server) expected(str string) {
-	s.expectedFilename = str
 }
 
 func (s *server) handler() http.Handler {
@@ -150,9 +120,9 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) sendPhoto(w http.ResponseWriter, r *http.Request) {
-	filename, err := extractFileanme(r)
+	filename, err := s.extractFileanme(r)
 	s.is.NoErr(err)
-	s.is.Equal(s.expectedFilename, filename)
+	s.sentPhotos = append(s.sentPhotos, filename)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"ok":true,"result":{}}`))
@@ -165,4 +135,40 @@ func (s *server) downloadFile(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
+}
+
+func (s *server) extractFileanme(r *http.Request) (string, error) {
+	contentType := r.Header.Get("Content-Type")
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", err
+	}
+
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		return "", fmt.Errorf("invalid content type: %s", contentType)
+	}
+
+	boundary := params["boundary"]
+	if boundary == "" {
+		return "", fmt.Errorf("no boundary found in Content-Type")
+	}
+
+	mr := multipart.NewReader(r.Body, boundary)
+
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+
+		filename := part.FileName()
+		if filename != "" {
+			return filename, nil
+		}
+	}
+
+	return "", errors.New("no filename")
 }

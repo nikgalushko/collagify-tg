@@ -137,18 +137,17 @@ func (a *App) cronHandler() error {
 
 	var funcErr error
 	for _, chatID := range chats {
-		messages, links, err := a.db.Links(ctx, chatID)
+		messages, toCollage, err := a.db.Links(ctx, chatID)
 		if err != nil {
 			funcErr = errors.Join(funcErr, fmt.Errorf("reading keys by prefix: %w", err))
 			continue
 		}
 		// TODO: delete from links
+		_ = messages
 
-		log.Debug("links", slog.Int("count", len(messages)))
-
-		for date, urls := range links {
-			images := make([][]byte, 0, len(urls))
-			for _, u := range urls {
+		for _, item := range toCollage {
+			images := make([][]byte, 0, len(item.links))
+			for _, u := range item.links {
 				resp, err := http.Get(u)
 				if err != nil {
 					funcErr = errors.Join(funcErr, fmt.Errorf("download link %s: %w", u, err))
@@ -180,7 +179,7 @@ func (a *App) cronHandler() error {
 			_, err = a.bt.SendPhoto(context.TODO(), &bot.SendPhotoParams{
 				ChatID: chatID,
 				Photo: &models.InputFileUpload{
-					Filename: fmt.Sprintf("collage_%s.jpg", date),
+					Filename: fmt.Sprintf("collage_%s.jpg", item.date),
 					Data:     bytes.NewReader(collage),
 				},
 			})

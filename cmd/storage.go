@@ -19,7 +19,7 @@ const (
 	`
 	linksTable = `
 		create table if not exists links (
-			chat_id integer not null primary key,
+			chat_id integer,
 			timestamp integer not null,
 			url text not null,
 			message_id integer not null
@@ -107,7 +107,12 @@ func (s *storage) Chats(ctx context.Context) ([]int64, error) {
 	return chats, nil
 }
 
-func (s *storage) Links(ctx context.Context, chatID int64) ([]int64, map[string][]string, error) {
+type toCollage struct {
+	date  string
+	links []string
+}
+
+func (s *storage) Links(ctx context.Context, chatID int64) ([]int64, []toCollage, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -117,8 +122,12 @@ func (s *storage) Links(ctx context.Context, chatID int64) ([]int64, map[string]
 	}
 	defer rows.Close()
 
-	var messages []int64
-	links := make(map[string][]string)
+	var (
+		messages     []int64
+		toCollageArr []toCollage
+		prevDate     string
+		i            = -1
+	)
 	for rows.Next() {
 		var (
 			messageID int64
@@ -132,10 +141,15 @@ func (s *storage) Links(ctx context.Context, chatID int64) ([]int64, map[string]
 
 		messages = append(messages, messageID)
 		date := time.Unix(timestamp, 0).Format(time.DateOnly)
-		links[date] = append(links[date], link)
+		if prevDate != date {
+			toCollageArr = append(toCollageArr, toCollage{date: date})
+			prevDate = date
+			i++
+		}
+		toCollageArr[i].links = append(toCollageArr[i].links, link)
 	}
 
-	return messages, links, nil
+	return messages, toCollageArr, nil
 }
 
 func (s *storage) Close() error {
