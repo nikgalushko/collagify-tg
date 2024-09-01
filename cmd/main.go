@@ -142,54 +142,83 @@ func (a *App) cronHandler() error {
 			funcErr = errors.Join(funcErr, fmt.Errorf("reading keys by prefix: %w", err))
 			continue
 		}
-		// TODO: delete from links
-		_ = messages
 
 		for _, item := range toCollage {
-			images := make([][]byte, 0, len(item.links))
-			for _, u := range item.links {
-				resp, err := http.Get(u)
-				if err != nil {
-					funcErr = errors.Join(funcErr, fmt.Errorf("download link %s: %w", u, err))
-					continue
-				}
-				defer resp.Body.Close()
-
-				body, err := io.ReadAll(resp.Body)
-				if err != nil {
-					funcErr = errors.Join(funcErr, fmt.Errorf("reading response body: %w", err))
-					continue
-				}
-
-				images = append(images, body)
-			}
-
-			cols := min(5, len(images))
-			rows := len(images) / cols
-			if len(images)%cols != 0 {
-				rows++
-			}
-
-			collage, err := image.Concat(images, rows, cols)
+			err := a.processCollage(chatID, item)
 			if err != nil {
-				funcErr = errors.Join(funcErr, fmt.Errorf("make collage: %w", err))
+				funcErr = errors.Join(funcErr, err)
 				continue
 			}
+		}
 
-			_, err = a.bt.SendPhoto(context.TODO(), &bot.SendPhotoParams{
-				ChatID: chatID,
-				Photo: &models.InputFileUpload{
-					Filename: fmt.Sprintf("collage_%s.jpg", item.date),
-					Data:     bytes.NewReader(collage),
-				},
-			})
-			if err != nil {
-				funcErr = errors.Join(funcErr, fmt.Errorf("send collage: %w", err))
-			}
+		err = a.db.DeleteMessages(ctx, messages)
+		if err == nil {
+			err = a.deleteMessages(ctx, chatID, messages)
+		}
+		if err != nil {
+			funcErr = errors.Join(funcErr, err)
 		}
 	}
 
 	return funcErr
+}
+
+func (a *App) deleteMessages(ctx context.Context, chatID int64, messages []int) error {
+	ok, err := a.bt.DeleteMessages(ctx, &bot.DeleteMessagesParams{
+		ChatID:     chatID,
+		MessageIDs: messages,
+	})
+	if err != nil {
+		return fmt.Errorf("delete messages from channel %d: %w", chatID, err)
+	}
+
+	if !ok {
+		return fmt.Errorf("unexpected fail to delete messages from channel %d", chatID)
+	}
+
+	return nil
+}
+
+func (a *App) processCollage(chatID int64, item toCollage) error {
+	images := make([][]byte, 0, len(item.links))
+	for _, u := range item.links {
+		resp, err := http.Get(u)
+		if err != nil {
+			return fmt.Errorf("download link %s: %w", u, err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("reading response body: %w", err)
+		}
+
+		images = append(images, body)
+	}
+
+	cols := min(5, len(images))
+	rows := len(images) / cols
+	if len(images)%cols != 0 {
+		rows++
+	}
+
+	collage, err := image.Concat(images, rows, cols)
+	if err != nil {
+		return fmt.Errorf("make collage: %w", err)
+	}
+
+	_, err = a.bt.SendPhoto(context.TODO(), &bot.SendPhotoParams{
+		ChatID: chatID,
+		Photo: &models.InputFileUpload{
+			Filename: fmt.Sprintf("collage_%s.jpg", item.date),
+			Data:     bytes.NewReader(collage),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("send collage: %w", err)
+	}
+
+	return nil
 }
 
 func (a *App) botHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -236,7 +265,7 @@ func (a *App) botHandleChannelPost(ctx context.Context, m *models.Message) error
 	link := a.bt.FileDownloadLink(f)
 	a.log.Info("download file link", slog.String("url", link))
 
-	err = a.db.RegistreLink(ctx, m.Chat.ID, 0, time.Unix(int64(m.Date), 0).In(moscowLoc), link)
+	err = a.db.RegistreLink(ctx, m.Chat.ID, int64(m.ID), time.Unix(int64(m.Date), 0).In(moscowLoc), link)
 	if err != nil {
 		return fmt.Errorf("save file link: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,7 +113,7 @@ type toCollage struct {
 	links []string
 }
 
-func (s *storage) Links(ctx context.Context, chatID int64) ([]int64, []toCollage, error) {
+func (s *storage) Links(ctx context.Context, chatID int64) ([]int, []toCollage, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -123,14 +124,14 @@ func (s *storage) Links(ctx context.Context, chatID int64) ([]int64, []toCollage
 	defer rows.Close()
 
 	var (
-		messages     []int64
+		messages     []int
 		toCollageArr []toCollage
 		prevDate     string
 		i            = -1
 	)
 	for rows.Next() {
 		var (
-			messageID int64
+			messageID int
 			link      string
 			timestamp int64
 		)
@@ -149,7 +150,40 @@ func (s *storage) Links(ctx context.Context, chatID int64) ([]int64, []toCollage
 		toCollageArr[i].links = append(toCollageArr[i].links, link)
 	}
 
+	if len(messages) == 0 {
+		return nil, nil, sql.ErrNoRows
+	}
+
 	return messages, toCollageArr, nil
+}
+
+func (s *storage) DeleteMessages(ctx context.Context, messages []int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(messages) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(messages))
+	for i := range messages {
+		placeholders[i] = "?"
+	}
+
+	args := make([]interface{}, len(messages))
+	for i, id := range messages {
+		args[i] = id
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("delete from links where message_id in (%s)", strings.Join(placeholders, ", ")),
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("delete messages from storage: %w", err)
+	}
+
+	return nil
 }
 
 func (s *storage) Close() error {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +29,7 @@ func TestApp(t *testing.T) {
 	is.NoErr(err)
 	moscowLoc = loc
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	server := StartServer(is)
 	t.Cleanup(server.close)
@@ -47,6 +48,7 @@ func TestApp(t *testing.T) {
 			{FileID: "red.jpeg", FileSize: 10},
 			{FileID: "fake.jpeg", FileSize: 2},
 		},
+		ID: 8,
 	})
 	is.NoErr(err)
 
@@ -57,18 +59,26 @@ func TestApp(t *testing.T) {
 			{FileID: "green.jpeg", FileSize: 10},
 			{FileID: "fake.jpeg", FileSize: 2},
 		},
+		ID: 9,
 	})
 	is.NoErr(err)
 
 	err = app.cronHandler()
 	is.NoErr(err)
 	is.Equal([]string{"collage_2024-08-31.jpg", "collage_2024-09-01.jpg"}, server.sentPhotos)
+	is.Equal("[8,9]", server.deletedMessages)
+
+	messages, toCollage, err := app.db.Links(context.TODO(), 1337)
+	is.Equal(0, len(messages))
+	is.Equal(0, len(toCollage))
+	is.Equal(sql.ErrNoRows, err)
 }
 
 type server struct {
-	is         *is.I
-	http       *httptest.Server
-	sentPhotos []string
+	is              *is.I
+	http            *httptest.Server
+	sentPhotos      []string
+	deletedMessages string
 }
 
 func StartServer(is *is.I) *server {
@@ -91,6 +101,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /bot1/getFile", s.getFile)
 	mux.HandleFunc("POST /bot1/sendPhoto", s.sendPhoto)
 	mux.HandleFunc("GET /file/bot1/testdir/{file}", s.downloadFile)
+	mux.HandleFunc("POST /bot1/deleteMessages", s.deleteMessages)
 
 	return mux
 }
@@ -120,7 +131,7 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) sendPhoto(w http.ResponseWriter, r *http.Request) {
-	filename, err := s.extractFileanme(r)
+	filename, err := s.extract(r, "filename")
 	s.is.NoErr(err)
 	s.sentPhotos = append(s.sentPhotos, filename)
 
@@ -137,7 +148,16 @@ func (s *server) downloadFile(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-func (s *server) extractFileanme(r *http.Request) (string, error) {
+func (s *server) deleteMessages(w http.ResponseWriter, r *http.Request) {
+	ids, err := s.extract(r, "message_ids")
+	s.is.NoErr(err)
+	s.deletedMessages += ids
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"ok":true,"result":true}`))
+}
+
+func (s *server) extract(r *http.Request, field string) (string, error) {
 	contentType := r.Header.Get("Content-Type")
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
@@ -164,11 +184,22 @@ func (s *server) extractFileanme(r *http.Request) (string, error) {
 			return "", err
 		}
 
-		filename := part.FileName()
-		if filename != "" {
-			return filename, nil
+		if field == "filename" {
+			filename := part.FileName()
+			if filename != "" {
+				return filename, nil
+			}
+		} else {
+			if part.FormName() == field {
+				data, err := io.ReadAll(part)
+				if err != nil {
+					return "", err
+				}
+				return string(data), nil
+			}
 		}
+
 	}
 
-	return "", errors.New("no filename")
+	return "", errors.New("no filed")
 }
