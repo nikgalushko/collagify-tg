@@ -29,54 +29,11 @@ func TestApp(t *testing.T) {
 	moscowLoc = loc
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.String() == "/bot1/getMe" {
-			w.Write([]byte(`{"ok":true,"result":{}}`))
-			return
-		}
-		if r.URL.String() == "/bot1/getFile" {
-			err := r.ParseMultipartForm(1024)
-			is.NoErr(err)
 
-			fileID := r.PostForm.Get("file_id")
+	server := StartServer(is)
+	t.Cleanup(server.close)
 
-			data, err := json.Marshal(models.File{FileID: fileID, FilePath: "testdir/" + fileID})
-			is.NoErr(err)
-
-			w.WriteHeader(http.StatusOK)
-			err = json.NewEncoder(w).Encode(struct {
-				OK     bool
-				Result json.RawMessage
-			}{
-				OK:     true,
-				Result: json.RawMessage(data),
-			})
-			is.NoErr(err)
-
-			return
-		}
-		if strings.HasPrefix(r.URL.String(), "/file/bot1/testdir/") {
-			file := r.URL.String()[19:]
-			data, err := os.ReadFile("testdata/" + file)
-			is.NoErr(err)
-
-			w.WriteHeader(http.StatusOK)
-			w.Write(data)
-		}
-		if r.URL.String() == "/bot1/sendPhoto" {
-			filename, err := extractFileanme(r)
-			is.NoErr(err)
-			is.Equal("collage_2024-08-31.jpg", filename)
-
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"ok":true,"result":{}}`))
-
-			return
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	app, err := New(log, AppArgs{Server: server.URL, DBPath: path.Join(t.TempDir(), "collagify.sqlite"), Token: "1"})
+	app, err := New(log, AppArgs{Server: server.Addr(), DBPath: path.Join(t.TempDir(), "collagify.sqlite"), Token: "1"})
 	is.NoErr(err)
 	t.Cleanup(app.Close)
 
@@ -93,6 +50,7 @@ func TestApp(t *testing.T) {
 	})
 	is.NoErr(err)
 
+	server.expected("collage_2024-08-31.jpg")
 	err = app.cronHandler()
 	is.NoErr(err)
 }
@@ -131,4 +89,80 @@ func extractFileanme(r *http.Request) (string, error) {
 	}
 
 	return "", errors.New("no filename")
+}
+
+type server struct {
+	expectedFilename string
+	is               *is.I
+	http             *httptest.Server
+}
+
+func StartServer(is *is.I) *server {
+	s := &server{is: is}
+	s.http = httptest.NewServer(s.handler())
+	return s
+}
+
+func (s *server) close() {
+	s.http.Close()
+}
+
+func (s *server) Addr() string {
+	return s.http.URL
+}
+
+func (s *server) expected(str string) {
+	s.expectedFilename = str
+}
+
+func (s *server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /bot1/getMe", s.getMe)
+	mux.HandleFunc("POST /bot1/getFile", s.getFile)
+	mux.HandleFunc("POST /bot1/sendPhoto", s.sendPhoto)
+	mux.HandleFunc("GET /file/bot1/testdir/{file}", s.downloadFile)
+
+	return mux
+}
+
+func (s *server) getMe(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte(`{"ok":true,"result":{}}`))
+}
+
+func (s *server) getFile(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseMultipartForm(1024)
+	s.is.NoErr(err)
+
+	fileID := r.PostForm.Get("file_id")
+
+	data, err := json.Marshal(models.File{FileID: fileID, FilePath: "testdir/" + fileID})
+	s.is.NoErr(err)
+
+	w.WriteHeader(http.StatusOK)
+	err = json.NewEncoder(w).Encode(struct {
+		OK     bool
+		Result json.RawMessage
+	}{
+		OK:     true,
+		Result: json.RawMessage(data),
+	})
+	s.is.NoErr(err)
+}
+
+func (s *server) sendPhoto(w http.ResponseWriter, r *http.Request) {
+	filename, err := extractFileanme(r)
+	s.is.NoErr(err)
+	s.is.Equal(s.expectedFilename, filename)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"ok":true,"result":{}}`))
+}
+
+func (s *server) downloadFile(w http.ResponseWriter, r *http.Request) {
+	file := r.PathValue("file")
+	data, err := os.ReadFile("testdata/" + file)
+	s.is.NoErr(err)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
 }
