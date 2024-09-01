@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func TestApp(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	app, err := New(log, AppArgs{Server: server.URL, DBPath: t.TempDir(), Token: "1"})
+	app, err := New(log, AppArgs{Server: server.URL, DBPath: path.Join(t.TempDir(), "collagify.sqlite"), Token: "1"})
 	is.NoErr(err)
 	t.Cleanup(app.Close)
 

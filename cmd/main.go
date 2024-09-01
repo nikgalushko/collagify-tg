@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"slices"
 	"time"
 
-	badger "github.com/dgraph-io/badger/v4"
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/robfig/cron/v3"
@@ -29,7 +27,7 @@ var (
 )
 
 const (
-	badgerPath        = "/tmp/badger"
+	tmpDBPath         = "/tmp/collagify.sqlite"
 	crontab           = "59 23 * * *"
 	apiTelegramServer = "https://api.telegram.org"
 )
@@ -38,7 +36,7 @@ type App struct {
 	log       *slog.Logger
 	crn       *cron.Cron
 	bt        *bot.Bot
-	db        *badger.DB
+	db        *storage
 	serverURL string
 }
 
@@ -53,9 +51,9 @@ func NewAppArgs() (AppArgs, error) {
 	if token == "" {
 		return AppArgs{}, errors.New("empty tg token")
 	}
-	dbPath := os.Getenv("COLLAGIFY_BADGER_PATH")
+	dbPath := os.Getenv("COLLAGIFY_DB_PATH")
 	if dbPath == "" {
-		dbPath = badgerPath
+		dbPath = tmpDBPath
 	}
 
 	return AppArgs{Token: token, DBPath: dbPath, Server: apiTelegramServer}, nil
@@ -68,7 +66,7 @@ func New(log *slog.Logger, args AppArgs) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = a.initDB(badgerPath)
+	err = a.initDB(args.DBPath)
 	if err != nil {
 		return nil, err
 	}
@@ -77,11 +75,10 @@ func New(log *slog.Logger, args AppArgs) (*App, error) {
 }
 
 func (a *App) initDB(dbPath string) error {
-	db, err := badger.Open(badger.DefaultOptions(dbPath))
+	db, err := NewStorage(dbPath)
 	if err != nil {
-		return fmt.Errorf("init db: %w", err)
+		return err
 	}
-
 	a.db = db
 	return nil
 }
@@ -126,104 +123,70 @@ func (a *App) Close() {
 }
 
 func (a *App) cronHandler() error {
+	ctx := context.Background()
+
 	log := a.log.WithGroup("cron")
 	log.Info("cron task start")
 
-	var chats []int64
-	err := a.db.View(func(tx *badger.Txn) error {
-		items, err := tx.Get([]byte("chats"))
-		if err != nil {
-			return fmt.Errorf("get: %w", err)
-		}
-
-		err = items.Value(func(val []byte) error {
-			const chunkSize = 8
-			for i := 0; i < len(val); i += chunkSize {
-				chunkBytes := val[i : i+chunkSize]
-				chatID := int64(binary.LittleEndian.Uint64(chunkBytes))
-				chats = append(chats, chatID)
-			}
-
-			return nil
-		})
-		if err != nil {
-			err = fmt.Errorf("collect: %w", err)
-		}
-
-		return err
-	})
+	chats, err := a.db.Chats(ctx)
 	if err != nil {
-		return fmt.Errorf("fetch registered chats: %w", err)
+		return err
 	}
 
 	log.Debug("chats to range", slog.Any("chats", chats))
 
-	date := time.Now().In(moscowLoc).Format(time.DateOnly)
 	var funcErr error
 	for _, chatID := range chats {
-		log := log.With(slog.Int64("chat_id", chatID))
-		var links []string
-		err := a.db.View(func(txn *badger.Txn) error {
-			opts := badger.DefaultIteratorOptions
-			opts.Prefix = []byte(fmt.Sprintf("%d_%s_", chatID, date))
-
-			it := txn.NewIterator(opts)
-			defer it.Close()
-
-			for it.Rewind(); it.Valid(); it.Next() {
-				value, err := it.Item().ValueCopy(nil)
-				if err != nil {
-					return err
-				}
-
-				links = append(links, string(value))
-			}
-
-			return nil
-		})
+		messages, links, err := a.db.Links(ctx, chatID)
 		if err != nil {
 			funcErr = errors.Join(funcErr, fmt.Errorf("reading keys by prefix: %w", err))
 			continue
 		}
+		// TODO: delete from links
 
-		log.Debug("links", slog.Int("count", len(links)))
+		log.Debug("links", slog.Int("count", len(messages)))
 
-		images := make([][]byte, 0, len(links))
-		for _, link := range links {
-			resp, err := http.Get(link)
+		for date, urls := range links {
+			images := make([][]byte, 0, len(urls))
+			for _, u := range urls {
+				resp, err := http.Get(u)
+				if err != nil {
+					funcErr = errors.Join(funcErr, fmt.Errorf("download link %s: %w", u, err))
+					continue
+				}
+				defer resp.Body.Close()
+
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					funcErr = errors.Join(funcErr, fmt.Errorf("reading response body: %w", err))
+					continue
+				}
+
+				images = append(images, body)
+			}
+
+			cols := min(5, len(images))
+			rows := len(images) / cols
+			if len(images)%cols != 0 {
+				rows++
+			}
+
+			collage, err := image.Concat(images, rows, cols)
 			if err != nil {
-				funcErr = errors.Join(funcErr, fmt.Errorf("download link %s: %w", link, err))
+				funcErr = errors.Join(funcErr, fmt.Errorf("make collage: %w", err))
 				continue
 			}
-			defer resp.Body.Close()
 
-			body, err := io.ReadAll(resp.Body)
+			_, err = a.bt.SendPhoto(context.TODO(), &bot.SendPhotoParams{
+				ChatID: chatID,
+				Photo: &models.InputFileUpload{
+					Filename: fmt.Sprintf("collage_%s.jpg", date),
+					Data:     bytes.NewReader(collage),
+				},
+			})
 			if err != nil {
-				funcErr = errors.Join(funcErr, fmt.Errorf("reading response body: %w", err))
-				continue
+				funcErr = errors.Join(funcErr, fmt.Errorf("send collage: %w", err))
 			}
-
-			images = append(images, body)
-		}
-
-		cols := min(5, len(images))
-		rows := len(images) / cols
-		if len(images)%cols != 0 {
-			rows++
-		}
-
-		collage, err := image.Concat(images, rows, cols)
-		if err != nil {
-			funcErr = errors.Join(funcErr, fmt.Errorf("make collage: %w", err))
-			continue
-		}
-
-		_, err = a.bt.SendPhoto(context.TODO(), &bot.SendPhotoParams{
-			ChatID: chatID,
-			Photo:  &models.InputFileUpload{Filename: fmt.Sprintf("collage_%s.jpg", date), Data: bytes.NewReader(collage)},
-		})
-		if err != nil {
-			funcErr = errors.Join(funcErr, fmt.Errorf("send collage: %w", err))
 		}
 	}
 
@@ -249,49 +212,10 @@ func (a *App) botHandler(ctx context.Context, b *bot.Bot, update *models.Update)
 			a.log.Error("failed to handle new chat registration", slogerr(err))
 		}
 	}
-
-	/*b.SendMessage(ctx, &bot.SendMessageParams{
-	ChatID: update.Message.Chat.ID,
-	Text:   update.Message.Text,
-	})*/
 }
 
 func (a *App) botHandleMyChatMember(ctx context.Context, r *models.ChatMemberUpdated) error {
-	err := a.db.Update(func(tx *badger.Txn) error {
-		k := []byte("chats")
-		chats, err := tx.Get(k)
-		if err != nil {
-			if !errors.Is(err, badger.ErrKeyNotFound) {
-				return fmt.Errorf("fetch registered chats: %w", err)
-			}
-
-			v := make([]byte, 8)
-			binary.LittleEndian.PutUint64(v, uint64(r.Chat.ID))
-
-			return tx.Set(k, v)
-		}
-
-		var existingValue []byte
-		err = chats.Value(func(val []byte) error {
-			existingValue = append(existingValue, val...)
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("read existing value: %w", err)
-		}
-
-		v := make([]byte, 8)
-		binary.LittleEndian.PutUint64(v, uint64(r.Chat.ID))
-
-		newValue := append(existingValue, v...)
-
-		return tx.Set(k, newValue)
-	})
-	if err != nil {
-		return fmt.Errorf("failed to register chat: %w", err)
-	}
-
-	return nil
+	return a.db.RegisterChat(ctx, r.Chat.ID, time.Unix(int64(r.Date), 0).In(moscowLoc))
 }
 
 func (a *App) botHandleChannelPost(ctx context.Context, m *models.Message) error {
@@ -313,20 +237,11 @@ func (a *App) botHandleChannelPost(ctx context.Context, m *models.Message) error
 	link := a.bt.FileDownloadLink(f)
 	a.log.Info("download file link", slog.String("url", link))
 
-	err = a.db.Update(func(tx *badger.Txn) error {
-		now := time.Unix(int64(m.Date), 0).In(moscowLoc)
-		chatID := m.Chat.ID
-		day := now.Format(time.DateOnly)
-		clock := now.Format(time.TimeOnly)
-
-		k := []byte(fmt.Sprintf("%d_%s_%s", chatID, day, clock))
-		v := []byte(link)
-
-		return tx.Set(k, v)
-	})
+	err = a.db.RegistreLink(ctx, m.Chat.ID, 0, time.Unix(int64(m.Date), 0).In(moscowLoc), link)
 	if err != nil {
 		return fmt.Errorf("save file link: %w", err)
 	}
+
 	return nil
 }
 

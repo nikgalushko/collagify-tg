@@ -4,3 +4,6 @@ build:
 
 docker:
 	docker build -t collagify-tg .
+
+test:
+	go test -v ./...

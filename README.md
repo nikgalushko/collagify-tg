@@ -9,7 +9,7 @@ The bot designed to help track daily food consumption effortlessly.
 ### Run in docker
 
 - Build a docker image `make docker`
-- Start container with `docker run --restart unless-stopped -e COLLAGIFY_TG_TOKEN=bot_token -e COLLAGIFY_BADGER_PATH=/inside/container/dbfile -v /path/to/dbfile:/inside/container/dbfile collagify-t`
+- Start container with `docker run --restart unless-stopped -e COLLAGIFY_TG_TOKEN=bot_token -e COLLAGIFY_DB_PATH=/inside/container/dbfile -v /path/to/dbfile:/inside/container/dbfile collagify-tg`
 
 ### Local run
 
@@ -22,9 +22,7 @@ The bot designed to help track daily food consumption effortlessly.
 Remember to set the following environment variables before running your bot:
 
 - `COLLAGIFY_TG_TOKEN`: Your bot token from BotFather.
-- `COLLAGIFY_BADGER_PATH`: Path to your Badger DB directory.
-
-The bot uses these to connect to the Telegram API and to Badger DB.
+- `COLLAGIFY_DB_PATH`: Path to sqlite db file.
 
 ## Contribution
 
