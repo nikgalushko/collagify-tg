@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"slices"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
