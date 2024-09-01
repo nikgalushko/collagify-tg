@@ -3,9 +3,10 @@ FROM golang:1.23.0-alpine3.20 AS builder
 WORKDIR /app
 COPY . .
 
+RUN apk add gcc && apk add musl-dev
 RUN go mod download
 RUN CURRENT_DATETIME=$(date '+%Y-%m-%dT%H:%M:%S') && \
-    CGO_ENABLED=0 go build -ldflags "-X main.BuildTime=${CURRENT_DATETIME}" -o collagify-tg ./cmd
+    CGO_ENABLED=1 go build -ldflags "-X main.BuildTime=${CURRENT_DATETIME}" -o collagify-tg ./cmd
 
 FROM alpine:3.20
 
