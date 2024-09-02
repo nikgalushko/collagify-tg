@@ -99,6 +99,7 @@ func (a *App) initBot(token string) error {
 	opts := []bot.Option{
 		bot.WithDefaultHandler(a.botHandler),
 		bot.WithServerURL(a.serverURL),
+		bot.WithDebug(),
 	}
 
 	b, err := bot.New(token, opts...)
@@ -303,6 +304,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer a.Close()
+
+	if s := os.Getenv("COLLAGIFY_FLUSH_ON_START"); s != "" {
+		err := a.cronHandler()
+		if err != nil {
+			a.log.Error("flush on start", slogerr(err))
+		}
+	}
 
 	a.Start(ctx)
 }
