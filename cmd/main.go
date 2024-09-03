@@ -29,7 +29,7 @@ var (
 
 const (
 	tmpDBPath         = "/tmp/collagify.sqlite"
-	crontab           = "59 23 * * *"
+	crontab           = "CRON_TZ=Europe/Moscow 59 23 * * *"
 	apiTelegramServer = "https://api.telegram.org"
 )
 
